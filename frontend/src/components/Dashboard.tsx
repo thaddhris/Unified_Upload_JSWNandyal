@@ -66,9 +66,9 @@ export function Dashboard({ onOpenUnified }: { onOpenUnified: () => void }) {
 
         {/* Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="io-table w-full text-sm">
             <thead>
-              <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50/60">
+              <tr className="text-left">
                 <th className="px-5 py-3 font-medium w-14">Sr.</th>
                 <th className="px-5 py-3 font-medium">Configuration</th>
                 <th className="px-5 py-3 font-medium">Plant / Area</th>

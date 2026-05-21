@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { type UploadFileResult } from "../lib/mockData";
+import { triggerDownload } from "../lib/templates";
 import { IconCheck, IconDownload, IconHome, IconUpload } from "./Icons";
 
 export function SuccessScreen({
@@ -82,7 +83,10 @@ export function SuccessScreen({
         {/* Actions */}
         <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/40 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
           {totals.errors > 0 || totals.ignoredRows > 0 ? (
-            <button className="h-10 px-4 rounded-lg border border-slate-200 bg-white text-slate-700 text-sm font-medium hover:bg-slate-50 flex items-center justify-center gap-2">
+            <button
+              onClick={() => downloadErrorReport(fileName, results)}
+              className="h-10 px-4 rounded-lg border border-slate-200 bg-white text-slate-700 text-sm font-medium hover:bg-slate-50 flex items-center justify-center gap-2"
+            >
               <IconDownload size={15} /> Download Error Report
             </button>
           ) : (
@@ -112,6 +116,83 @@ export function SuccessScreen({
       </p>
     </div>
   );
+}
+
+// Generates a CSV listing every error / warning / skipped row across all
+// configs in this upload. Operators can hand this to QA or use it as a
+// punch-list when re-uploading the corrected file.
+function downloadErrorReport(fileName: string, results: UploadFileResult[]) {
+  const ts = new Date();
+  const stamp = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, "0")}-${String(
+    ts.getDate(),
+  ).padStart(2, "0")}_${String(ts.getHours()).padStart(2, "0")}${String(ts.getMinutes()).padStart(2, "0")}`;
+
+  const esc = (v: string | number) => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const lines: string[] = [];
+  lines.push(`# IOsense Unified Upload — Error & Skipped Rows Report`);
+  lines.push(`# Source file: ${fileName}`);
+  lines.push(`# Generated: ${ts.toISOString()}`);
+  lines.push(`# Sheets affected: ${results.length}`);
+  lines.push("");
+  lines.push(
+    [
+      "Configuration",
+      "Config ID",
+      "Severity",
+      "Row in file",
+      "Column",
+      "Issue",
+    ]
+      .map(esc)
+      .join(","),
+  );
+
+  let count = 0;
+  for (const r of results) {
+    for (const v of r.validation) {
+      if (v.level === "info") continue; // info lines are confirmations, not issues
+      lines.push(
+        [
+          r.configName,
+          r.configId,
+          v.level,
+          v.row ?? "",
+          v.column ?? "",
+          v.message,
+        ]
+          .map(esc)
+          .join(","),
+      );
+      count++;
+    }
+    // Also list skipped-row count per config so the report is a complete punch-list
+    if (r.ignoredRows > 0) {
+      lines.push(
+        [
+          r.configName,
+          r.configId,
+          "skipped",
+          "",
+          "",
+          `${r.ignoredRows} row${r.ignoredRows === 1 ? "" : "s"} skipped (empty values or duplicate timestamps).`,
+        ]
+          .map(esc)
+          .join(","),
+      );
+      count++;
+    }
+  }
+
+  if (count === 0) {
+    lines.push("(no issues to report)");
+  }
+
+  const out = lines.join("\n");
+  triggerDownload(`IOsense_Upload_Error_Report__${stamp}.csv`, out);
 }
 
 function SummaryCard({ label, value, tone }: { label: string; value: number; tone: "slate" | "emerald" | "sky" | "amber" }) {

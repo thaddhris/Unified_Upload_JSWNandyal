@@ -8,6 +8,9 @@ export type ParsedSheet = {
   totalRows: number;
   filledRows: number;
   headers: string[];
+  // ISO strings for every row that had at least one filled value. Used by the
+  // adapter's checkConflicts() to split new vs overwrites in the preview.
+  filledTimestamps: string[];
 };
 
 const RESERVED = new Set(["Date", "Time", "Shift", "Operator", "Remarks"]);
@@ -86,28 +89,78 @@ function analyzeRows(
   }
 
   if (headerIdx === -1) {
-    return { fileName, sheetName, configId, configName, totalRows: 0, filledRows: 0, headers: [] };
+    return {
+      fileName,
+      sheetName,
+      configId,
+      configName,
+      totalRows: 0,
+      filledRows: 0,
+      headers: [],
+      filledTimestamps: [],
+    };
   }
 
   const headers = (rows[headerIdx] ?? []).map((h) =>
     (h ?? "").toString().replace(/^﻿/, "").replace(/^"+|"+$/g, "").trim(),
   );
+  const dateColIdx = headers.findIndex((h) => h.toLowerCase().startsWith("date"));
   const dataColIdxs = headers
     .map((h, i) => ({ h, i }))
-    .filter(({ h }) => !RESERVED.has(h))
+    .filter(({ h, i }) => !RESERVED.has(h) && i !== dateColIdx)
     .map(({ i }) => i);
 
   let totalRows = 0;
   let filledRows = 0;
+  const filledTimestamps: string[] = [];
+
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const cells = rows[i] ?? [];
     if (cells.every((c) => (c ?? "").toString().trim() === "")) continue;
     totalRows++;
     const hasData = dataColIdxs.some((idx) => ((cells[idx] ?? "") as string).toString().trim() !== "");
-    if (hasData) filledRows++;
+    if (hasData) {
+      filledRows++;
+      if (dateColIdx >= 0) {
+        const raw = ((cells[dateColIdx] ?? "") as string).toString().trim();
+        const iso = normalizeTimestamp(raw);
+        if (iso) filledTimestamps.push(iso);
+      }
+    }
   }
 
-  return { fileName, sheetName, configId, configName, totalRows, filledRows, headers };
+  return {
+    fileName,
+    sheetName,
+    configId,
+    configName,
+    totalRows,
+    filledRows,
+    headers,
+    filledTimestamps,
+  };
+}
+
+// Accepts "DD/MM/YYYY HH:MM:SS", "DD/MM/YYYY HH:MM", "YYYY-MM-DD HH:MM:SS",
+// "YYYY-MM-DD", and ISO timestamps. Returns an ISO string or null.
+function normalizeTimestamp(s: string): string | null {
+  if (!s) return null;
+  // DD/MM/YYYY [HH:MM[:SS]]
+  const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (slash) {
+    const [, d, m, y, h = "0", mi = "0", se = "0"] = slash;
+    const dt = new Date(+y, +m - 1, +d, +h, +mi, +se);
+    return isNaN(dt.getTime()) ? null : dt.toISOString();
+  }
+  // YYYY-MM-DD [HH:MM[:SS]]
+  const dash = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (dash) {
+    const [, y, m, d, h = "0", mi = "0", se = "0"] = dash;
+    const dt = new Date(+y, +m - 1, +d, +h, +mi, +se);
+    return isNaN(dt.getTime()) ? null : dt.toISOString();
+  }
+  const native = new Date(s);
+  return isNaN(native.getTime()) ? null : native.toISOString();
 }
 
 async function parseCSV(file: File): Promise<ParsedSheet[]> {

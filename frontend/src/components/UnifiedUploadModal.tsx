@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { ENTRY_CONFIGS, type EntryConfig } from "../lib/mockData";
+import { type EntryConfig } from "../lib/mockData";
+import { listGroups, saveGroup, deleteGroup, type ConfigGroup } from "../lib/groups";
 import { parseTemplates, type ParsedSheet } from "../lib/parseUpload";
 import {
-  downloadTemplate,
   downloadWorkbook,
   estimateRows,
   parseISO,
@@ -24,11 +24,15 @@ import {
 type Step = "select" | "uploading";
 
 export function UnifiedUploadModal({
+  configs,
   onClose,
   onProceed,
+  preselectedIds,
 }: {
+  configs: EntryConfig[];
   onClose: () => void;
   onProceed: (selected: EntryConfig[], fileName: string, parsedSheets: ParsedSheet[]) => void;
+  preselectedIds?: string[];
 }) {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [query, setQuery] = React.useState("");
@@ -40,7 +44,63 @@ export function UnifiedUploadModal({
   const [fromDate, setFromDate] = React.useState<string>(todayISO(-6));
   const [toDate, setToDate] = React.useState<string>(todayISO(0));
   const [toast, setToast] = React.useState<string | null>(null);
+  const [groups, setGroups] = React.useState<ConfigGroup[]>([]);
+  const [activeGroupId, setActiveGroupId] = React.useState<string | null>(null);
+  const [saveGroupOpen, setSaveGroupOpen] = React.useState(false);
+  const [newGroupName, setNewGroupName] = React.useState("");
+  const [groupsExpanded, setGroupsExpanded] = React.useState(false);
+  const GROUPS_VISIBLE = 6;
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    setGroups(listGroups());
+  }, []);
+
+  // Seed the selection from preselectedIds (used when launched from a saved group on the landing)
+  React.useEffect(() => {
+    if (!preselectedIds || preselectedIds.length === 0) return;
+    const next = new Set<string>();
+    for (const id of preselectedIds) {
+      if (configs.some((c) => c.id === id)) next.add(id);
+    }
+    setSelected(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preselectedIds, configs]);
+
+  const applyGroup = (g: ConfigGroup) => {
+    const next = new Set<string>();
+    for (const id of g.configIds) {
+      if (configs.some((c) => c.id === id)) next.add(id);
+    }
+    setSelected(next);
+    setActiveGroupId(g.id);
+  };
+
+  const handleSaveGroup = () => {
+    if (!newGroupName.trim()) return;
+    try {
+      const created = saveGroup(newGroupName, Array.from(selected));
+      setGroups(listGroups());
+      setActiveGroupId(created.id);
+      setNewGroupName("");
+      setSaveGroupOpen(false);
+      showToast(`Group "${created.name}" saved · ${created.configIds.length} configs`);
+    } catch (e) {
+      showToast((e as Error).message);
+    }
+  };
+
+  const handleDeleteGroup = (g: ConfigGroup) => {
+    deleteGroup(g.id);
+    setGroups(listGroups());
+    if (activeGroupId === g.id) setActiveGroupId(null);
+    showToast(`Group "${g.name}" deleted`);
+  };
+
+  // If user manually changes selection after applying a group, clear the "active" highlight
+  const onSelectionChanged = () => {
+    if (activeGroupId) setActiveGroupId(null);
+  };
 
   const showToast = React.useCallback((msg: string) => {
     setToast(msg);
@@ -48,7 +108,9 @@ export function UnifiedUploadModal({
   }, []);
 
   const handleDownloadOne = (cfg: EntryConfig) => {
-    downloadTemplate(cfg, from, to);
+    // Single-sheet workbook so even one-config downloads are styled (blue
+    // headers, two-line target labels, gridlines) — matches the production format.
+    downloadWorkbook([cfg], from, to);
     showToast(`Template for "${cfg.name}" downloaded`);
   };
 
@@ -59,7 +121,7 @@ export function UnifiedUploadModal({
   };
 
   const selectedConfigs = React.useMemo(
-    () => ENTRY_CONFIGS.filter((c) => selected.has(c.id)),
+    () => configs.filter((c) => selected.has(c.id)),
     [selected],
   );
 
@@ -71,11 +133,11 @@ export function UnifiedUploadModal({
     : 0;
 
   const plants = React.useMemo(
-    () => ["All", ...Array.from(new Set(ENTRY_CONFIGS.map((c) => c.plant)))],
+    () => ["All", ...Array.from(new Set(configs.map((c) => c.plant)))],
     [],
   );
 
-  const visible = ENTRY_CONFIGS.filter(
+  const visible = configs.filter(
     (c) =>
       (plantFilter === "All" || c.plant === plantFilter) &&
       (c.name.toLowerCase().includes(query.toLowerCase()) ||
@@ -87,6 +149,7 @@ export function UnifiedUploadModal({
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelected(next);
+    onSelectionChanged();
   };
 
   const toggleAll = () => {
@@ -99,6 +162,7 @@ export function UnifiedUploadModal({
       visible.forEach((c) => next.add(c.id));
       setSelected(next);
     }
+    onSelectionChanged();
   };
 
   const allVisibleSelected = visible.length > 0 && visible.every((c) => selected.has(c.id));
@@ -135,7 +199,7 @@ export function UnifiedUploadModal({
     const parsed = await parsedPromise;
     setProgress(100);
     setTimeout(() => {
-      const chosen = ENTRY_CONFIGS.filter((c) => selected.has(c.id));
+      const chosen = configs.filter((c) => selected.has(c.id));
       const fname =
         files.length === 1 ? files[0].name : `${files.length} files (${files.map((f) => f.name).join(", ")})`;
       onProceed(chosen, fname, parsed);
@@ -190,13 +254,109 @@ export function UnifiedUploadModal({
           <div className="flex-1 flex min-h-0">
             {/* Left: config picker */}
             <div className="flex-1 min-w-0 flex flex-col border-r border-slate-100">
+              {/* Groups bar */}
+              <div className="px-5 py-2 border-b border-slate-100 bg-slate-50/60">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 shrink-0">
+                    Groups
+                  </span>
+                  {groups.length === 0 && (
+                    <span className="text-xs text-slate-400 italic">
+                      Saved bundles will appear here — select configs then save as a group.
+                    </span>
+                  )}
+                  {(groupsExpanded ? groups : groups.slice(0, GROUPS_VISIBLE)).map((g) => {
+                    const active = activeGroupId === g.id;
+                    return (
+                      <span
+                        key={g.id}
+                        className={`group inline-flex items-center gap-1 text-xs rounded-full pl-2.5 pr-1 py-0.5 border transition-colors ${
+                          active
+                            ? "bg-emerald-500 text-white border-emerald-500"
+                            : "bg-white text-slate-700 border-slate-200 hover:border-emerald-400 hover:text-emerald-700"
+                        }`}
+                      >
+                        <button onClick={() => applyGroup(g)} className="font-medium" title={`Select ${g.configIds.length} configs`}>
+                          {g.name}
+                        </button>
+                        <span className={`text-[10px] font-mono ${active ? "text-white/80" : "text-slate-400"}`}>
+                          {g.configIds.length}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (window.confirm(`Delete group "${g.name}"?`)) handleDeleteGroup(g);
+                          }}
+                          className={`w-4 h-4 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${
+                            active ? "hover:bg-white/20" : "hover:bg-slate-100 text-slate-500"
+                          }`}
+                          title="Delete group"
+                        >
+                          <IconX size={10} />
+                        </button>
+                      </span>
+                    );
+                  })}
+                  {groups.length > GROUPS_VISIBLE && (
+                    <button
+                      onClick={() => setGroupsExpanded((v) => !v)}
+                      className="text-xs font-medium px-2 py-0.5 rounded-full border border-dashed border-slate-300 text-slate-600 hover:bg-white hover:border-emerald-400 hover:text-emerald-700 transition-colors"
+                    >
+                      {groupsExpanded
+                        ? "Show fewer"
+                        : `+${groups.length - GROUPS_VISIBLE} more`}
+                    </button>
+                  )}
+                  <div className="flex-1" />
+                  {selected.size > 0 && !activeGroupId && (
+                    <button
+                      onClick={() => {
+                        setNewGroupName("");
+                        setSaveGroupOpen(true);
+                      }}
+                      className="text-xs px-2.5 py-1 rounded-full border border-dashed border-slate-300 text-slate-600 hover:bg-white hover:border-emerald-400 hover:text-emerald-700 transition-colors"
+                    >
+                      + Save selection as group
+                    </button>
+                  )}
+                </div>
+                {saveGroupOpen && (
+                  <div className="mt-2 flex items-center gap-2 bg-white border border-emerald-200 rounded-lg p-2">
+                    <input
+                      autoFocus
+                      value={newGroupName}
+                      onChange={(e) => setNewGroupName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSaveGroup();
+                        if (e.key === "Escape") setSaveGroupOpen(false);
+                      }}
+                      placeholder="e.g. Line B nightshift bundle"
+                      className="flex-1 h-8 px-2 text-sm rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                    />
+                    <button
+                      onClick={handleSaveGroup}
+                      disabled={!newGroupName.trim()}
+                      className="h-8 px-3 text-xs font-semibold rounded-md bg-emerald-500 text-white hover:bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-400"
+                    >
+                      Save · {selected.size}
+                    </button>
+                    <button
+                      onClick={() => setSaveGroupOpen(false)}
+                      className="h-8 w-8 rounded-md text-slate-500 hover:bg-slate-100 flex items-center justify-center"
+                    >
+                      <IconX size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2">
                 <div className="relative flex-1">
                   <IconSearch size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Search 102 configurations…"
+                    placeholder={`Search ${configs.length} configuration${configs.length === 1 ? "" : "s"}…`}
                     className="pl-9 pr-3 h-9 w-full rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 text-sm"
                   />
                 </div>
@@ -450,7 +610,7 @@ export function UnifiedUploadModal({
                     <span className="text-slate-600">Plants covered</span>
                     <span className="font-semibold text-slate-900">
                       {new Set(
-                        ENTRY_CONFIGS.filter((c) => selected.has(c.id)).map((c) => c.plant),
+                        configs.filter((c) => selected.has(c.id)).map((c) => c.plant),
                       ).size}
                     </span>
                   </div>

@@ -1,5 +1,9 @@
 import * as XLSX from "xlsx";
-import { type EntryConfig } from "./mockData";
+// xlsx-js-style is a drop-in fork of SheetJS community that preserves cell
+// styles (fill, font, alignment, borders) when writing XLSX files. The plain
+// `xlsx` package drops styles on write.
+import XLSXStyle from "xlsx-js-style";
+import { type EntryConfig, type ColumnDef } from "./mockData";
 
 export type Periodicity = EntryConfig["periodicity"];
 
@@ -11,15 +15,17 @@ function fmtDate(d: Date) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function fmtTime(d: Date) {
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+// Production Excel uses "DD/MM/YYYY HH:MM:SS" in a single DATE column.
+function fmtDateTimeForCell(d: Date): string {
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function shiftLabel(d: Date): string {
-  const h = d.getHours();
-  if (h < 14) return "A (06:00–14:00)";
-  if (h < 22) return "B (14:00–22:00)";
-  return "C (22:00–06:00)";
+// Two-line header label: name+unit on line 1, target on line 2 (matches the
+// production Excel where targets sit under the column name within the same cell).
+function columnLabel(col: ColumnDef): string {
+  const unit = col.unit ? ` ${col.unit}` : "";
+  if (col.target) return `${col.name}${unit}\nTarget ${col.target}`;
+  return `${col.name}${unit}`;
 }
 
 export function generateTimestamps(period: Periodicity, from: Date, to: Date): Date[] {
@@ -45,26 +51,30 @@ export function generateTimestamps(period: Periodicity, from: Date, to: Date): D
   return out;
 }
 
+// Header layout matches the production manual-entry Excel:
+//   DATE  |  <real param 1>  |  <real param 2>  …  |  Operator | Remarks
+// A single DATE column holds the full date+time so users don't have to
+// reconcile separate Date / Time / Shift columns.
 export function buildHeaders(cfg: EntryConfig): string[] {
-  const headers: string[] = ["Date"];
-  const needsTime = cfg.periodicity === "Hourly" || cfg.periodicity === "Shift";
-  if (needsTime) headers.push("Time");
-  if (cfg.periodicity === "Shift") headers.push("Shift");
+  const headers: string[] = ["DATE"];
 
-  const reserved = headers.length; // Date, Time?, Shift?
-  const dataCount = Math.max(0, cfg.columns - reserved);
-
-  if (cfg.subSections > 0) {
-    const perSub = Math.max(1, Math.ceil(dataCount / cfg.subSections));
-    let added = 0;
-    for (let s = 1; s <= cfg.subSections && added < dataCount; s++) {
-      for (let c = 1; c <= perSub && added < dataCount; c++) {
-        headers.push(`Sub-section ${s} · Param ${c}`);
-        added++;
-      }
-    }
+  if (cfg.columnDefs && cfg.columnDefs.length > 0) {
+    for (const c of cfg.columnDefs) headers.push(columnLabel(c));
   } else {
-    for (let c = 1; c <= dataCount; c++) headers.push(`Param ${c}`);
+    // Fallback for configs that don't yet have real column defs
+    const dataCount = Math.max(0, cfg.columns - 1);
+    if (cfg.subSections > 0) {
+      const perSub = Math.max(1, Math.ceil(dataCount / cfg.subSections));
+      let added = 0;
+      for (let s = 1; s <= cfg.subSections && added < dataCount; s++) {
+        for (let c = 1; c <= perSub && added < dataCount; c++) {
+          headers.push(`Sub-section ${s} · Param ${c}`);
+          added++;
+        }
+      }
+    } else {
+      for (let c = 1; c <= dataCount; c++) headers.push(`Param ${c}`);
+    }
   }
 
   headers.push("Operator", "Remarks");
@@ -91,17 +101,15 @@ export function generateTemplateCSV(cfg: EntryConfig, from: Date, to: Date): str
     `# Plant: ${cfg.plant}   Periodicity: ${cfg.periodicity}   Sub-sections: ${cfg.subSections}`,
     `# Sheet version: ${versionNote}`,
     `# Window: ${fmtDate(from)}  →  ${fmtDate(to)}   Rows: ${ts.length}`,
-    `# Do not rename or reorder the Date/Time/Shift columns.`,
+    `# Do not rename or reorder the DATE column.`,
     ``,
   ];
 
   const lines: string[] = [...meta, headers.map(escapeCSV).join(",")];
 
   for (const t of ts) {
-    const row: string[] = [fmtDate(t)];
-    if (cfg.periodicity === "Hourly" || cfg.periodicity === "Shift") row.push(fmtTime(t));
-    if (cfg.periodicity === "Shift") row.push(shiftLabel(t));
-    for (let i = row.length; i < headers.length; i++) row.push("");
+    const row: string[] = [fmtDateTimeForCell(t)];
+    for (let i = 1; i < headers.length; i++) row.push("");
     lines.push(row.map(escapeCSV).join(","));
   }
   return lines.join("\n");
@@ -206,35 +214,125 @@ function aoaForConfig(cfg: EntryConfig, from: Date, to: Date): string[][] {
     [`# Plant: ${cfg.plant}   Periodicity: ${cfg.periodicity}   Sub-sections: ${cfg.subSections}`],
     [`# Sheet version: ${versionNote}`],
     [`# Window: ${fmtDate(from)} → ${fmtDate(to)}   Rows: ${ts.length}`],
-    [`# Do not rename or reorder the Date / Time / Shift columns.`],
+    [`# Do not rename or reorder the DATE column. Format: DD/MM/YYYY HH:MM:SS`],
     [],
   ];
   const rows: string[][] = [headers];
   for (const t of ts) {
-    const r: string[] = [fmtDate(t)];
-    if (cfg.periodicity === "Hourly" || cfg.periodicity === "Shift") r.push(fmtTime(t));
-    if (cfg.periodicity === "Shift") r.push(shiftLabel(t));
-    for (let i = r.length; i < headers.length; i++) r.push("");
+    const r: string[] = [fmtDateTimeForCell(t)];
+    for (let i = 1; i < headers.length; i++) r.push("");
     rows.push(r);
   }
   return [...meta, ...rows];
 }
 
+// Header style — matches the production cement-quality Excel template:
+// medium blue fill (Excel's standard 4472C4), white bold text, centered, wrapped
+// so the "Target X.Y" line sits below the column name within the same cell.
+const HEADER_STYLE = {
+  fill: { patternType: "solid", fgColor: { rgb: "4472C4" } },
+  font: { name: "Calibri", sz: 11, bold: true, color: { rgb: "FFFFFF" } },
+  alignment: { horizontal: "center", vertical: "center", wrapText: true },
+  border: {
+    top: { style: "thin", color: { rgb: "BFBFBF" } },
+    bottom: { style: "thin", color: { rgb: "BFBFBF" } },
+    left: { style: "thin", color: { rgb: "BFBFBF" } },
+    right: { style: "thin", color: { rgb: "BFBFBF" } },
+  },
+};
+
+const META_STYLE = {
+  font: { name: "Calibri", sz: 9, italic: true, color: { rgb: "6B7280" } },
+};
+
+const DATE_CELL_STYLE = {
+  font: { name: "Calibri", sz: 11 },
+  alignment: { horizontal: "center", vertical: "center" },
+  border: {
+    top: { style: "thin", color: { rgb: "D9D9D9" } },
+    bottom: { style: "thin", color: { rgb: "D9D9D9" } },
+    left: { style: "thin", color: { rgb: "D9D9D9" } },
+    right: { style: "thin", color: { rgb: "D9D9D9" } },
+  },
+};
+
+const DATA_CELL_STYLE = {
+  font: { name: "Calibri", sz: 11 },
+  alignment: { horizontal: "center", vertical: "center" },
+  border: {
+    top: { style: "thin", color: { rgb: "D9D9D9" } },
+    bottom: { style: "thin", color: { rgb: "D9D9D9" } },
+    left: { style: "thin", color: { rgb: "D9D9D9" } },
+    right: { style: "thin", color: { rgb: "D9D9D9" } },
+  },
+};
+
+function applySheetStyles(
+  ws: XLSX.WorkSheet,
+  headerRowIndex: number,
+  metaRowCount: number,
+  headerCount: number,
+  totalRows: number,
+) {
+  // Style metadata rows
+  for (let r = 0; r < metaRowCount; r++) {
+    const addr = XLSX.utils.encode_cell({ r, c: 0 });
+    if (ws[addr]) (ws[addr] as XLSX.CellObject).s = META_STYLE;
+  }
+  // Style header row
+  for (let c = 0; c < headerCount; c++) {
+    const addr = XLSX.utils.encode_cell({ r: headerRowIndex, c });
+    if (!ws[addr]) ws[addr] = { t: "s", v: "" } as XLSX.CellObject;
+    (ws[addr] as XLSX.CellObject).s = HEADER_STYLE;
+  }
+  // Style every data cell with a light-gray border + center alignment so the
+  // table looks gridded like the production file (not raw / borderless).
+  for (let r = headerRowIndex + 1; r <= headerRowIndex + totalRows; r++) {
+    for (let c = 0; c < headerCount; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" } as XLSX.CellObject;
+      (ws[addr] as XLSX.CellObject).s = c === 0 ? DATE_CELL_STYLE : DATA_CELL_STYLE;
+    }
+  }
+  // Freeze the header row so it stays in view while scrolling data
+  ws["!freeze"] = { xSplit: 0, ySplit: headerRowIndex + 1 };
+}
+
 export function downloadWorkbook(cfgs: EntryConfig[], from: Date, to: Date) {
   if (cfgs.length === 0) return;
-  const wb = XLSX.utils.book_new();
+  const wb = XLSXStyle.utils.book_new();
   const used = new Set<string>();
   for (const cfg of cfgs) {
     const aoa = aoaForConfig(cfg, from, to);
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    // Reasonable default column widths so headers don't get truncated on open
-    const widest = aoa[6] ?? aoa[0] ?? [];
-    ws["!cols"] = widest.map((h) => ({ wch: Math.min(28, Math.max(12, (h ?? "").length + 2)) }));
+    const ws = XLSXStyle.utils.aoa_to_sheet(aoa);
+    const headerRowIndex = 7; // 7 meta lines (incl. blank) before the header row
+    const headers = aoa[headerRowIndex] ?? [];
+    const totalDataRows = Math.max(0, aoa.length - (headerRowIndex + 1));
+
+    // Reasonable default column widths — the DATE column needs ~20 chars for
+    // "DD/MM/YYYY HH:MM:SS", chemistry columns need ~12 chars.
+    ws["!cols"] = headers.map((h, idx) => {
+      if (idx === 0) return { wch: 22 };
+      // Use the longest line of the wrapped header to size the column
+      const longest = String(h ?? "")
+        .split("\n")
+        .reduce((m, line) => Math.max(m, line.length), 0);
+      return { wch: Math.min(20, Math.max(11, longest + 2)) };
+    });
+    ws["!rows"] = [];
+    // Taller header row so the two-line "Name / Target" wrap renders cleanly
+    ws["!rows"][headerRowIndex] = { hpt: 42 };
+
+    applySheetStyles(ws, headerRowIndex, headerRowIndex, headers.length, totalDataRows);
+
     const tabName = sanitizeSheetName(cfg.name, cfg.id, used);
-    XLSX.utils.book_append_sheet(wb, ws, tabName);
+    XLSXStyle.utils.book_append_sheet(wb, ws, tabName);
   }
-  const fname = `IOsense_Bulk_Upload__${fmtDate(from)}_to_${fmtDate(to)}.xlsx`;
-  XLSX.writeFile(wb, fname, { bookType: "xlsx", compression: true });
+  const fname =
+    cfgs.length === 1
+      ? `${safeName(cfgs[0].name)}__${cfgs[0].id}__${fmtDate(from)}_to_${fmtDate(to)}.xlsx`
+      : `IOsense_Bulk_Upload__${fmtDate(from)}_to_${fmtDate(to)}.xlsx`;
+  XLSXStyle.writeFile(wb, fname, { bookType: "xlsx", compression: true });
 }
 
 

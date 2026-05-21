@@ -105,9 +105,9 @@ export function PreviewScreen({
           <span className="text-xs text-slate-500">Click a row to view validation details</span>
         </div>
 
-        <table className="w-full text-sm">
+        <table className="io-table w-full text-sm">
           <thead>
-            <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50/60">
+            <tr className="text-left">
               <th className="px-5 py-3 font-medium w-8"></th>
               <th className="px-5 py-3 font-medium">Configuration</th>
               <th className="px-5 py-3 font-medium text-right">Rows in file</th>
