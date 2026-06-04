@@ -14,15 +14,15 @@ function safeRead(): ConfigGroup[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return seed();
+    if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return seed();
+    if (!Array.isArray(parsed)) return [];
     return parsed.filter(
       (g): g is ConfigGroup =>
         g && typeof g.id === "string" && typeof g.name === "string" && Array.isArray(g.configIds),
     );
   } catch {
-    return seed();
+    return [];
   }
 }
 
@@ -33,26 +33,6 @@ function safeWrite(groups: ConfigGroup[]) {
   } catch {
     /* quota or privacy mode — ignore in prototype */
   }
-}
-
-// Ship a couple of starter groups so the feature is discoverable on first open.
-function seed(): ConfigGroup[] {
-  const seeded: ConfigGroup[] = [
-    {
-      id: "grp-line-a-daily",
-      name: "Line A — Daily Bundle",
-      configIds: ["cfg-001", "cfg-002", "cfg-005", "cfg-008"],
-      createdAt: Date.now() - 1000 * 60 * 60 * 24 * 14,
-    },
-    {
-      id: "grp-qc-lab",
-      name: "QC Lab — Morning Batch",
-      configIds: ["cfg-002", "cfg-007", "cfg-010", "cfg-017"],
-      createdAt: Date.now() - 1000 * 60 * 60 * 24 * 5,
-    },
-  ];
-  safeWrite(seeded);
-  return seeded;
 }
 
 export function listGroups(): ConfigGroup[] {

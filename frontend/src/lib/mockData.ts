@@ -3,6 +3,10 @@ export type ColumnDef = {
   unit?: string;
   target?: string;
   subSection?: string;
+  // Pre-existing values from the backend keyed by nanosecond-string
+  // timestamp. The template builder uses this to pre-populate cells so
+  // the user sees current data and only edits what they want to change.
+  existingData?: Record<string /* nsTime */, string>;
 };
 
 export type EntryConfig = {
@@ -25,6 +29,14 @@ export type EntryConfig = {
   // generation (v1 reads a hardcoded schema map, v2 reads the live config) and
   // the save endpoint (routed by version behind a common facade).
   version: "v1" | "v2";
+  // Time anchor for non-hourly entries (from the section's V2 config). When
+  // set, the template generator places each daily/weekly/monthly row at this
+  // time-of-day instead of midnight, matching what the V2 web UI sends.
+  cycleTimeHr?: number;
+  cycleTimeMin?: number;
+  // ms-into-UTC-day derived from existing entries. Timezone-independent and
+  // matches the backend's storage key. Used preferentially when present.
+  anchorOffsetMs?: number;
 };
 
 // Reusable column packs — keep production-realistic column names so the template

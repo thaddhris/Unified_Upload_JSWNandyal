@@ -15,7 +15,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Unified Upload — IOsense Manual Data Entry",
-  description: "Multi-config bulk upload prototype for cement quality operations.",
+  description:
+    "Push one workbook against multiple manual-entry sheets in IOsense. Templates auto-fill timestamps, preview shows what will change, nothing is saved until you confirm.",
 };
 
 export default function RootLayout({

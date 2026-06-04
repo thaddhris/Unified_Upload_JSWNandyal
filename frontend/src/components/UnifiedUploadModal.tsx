@@ -28,11 +28,16 @@ export function UnifiedUploadModal({
   onClose,
   onProceed,
   preselectedIds,
+  onPrepareConfig,
 }: {
   configs: EntryConfig[];
   onClose: () => void;
   onProceed: (selected: EntryConfig[], fileName: string, parsedSheets: ParsedSheet[]) => void;
   preselectedIds?: string[];
+  // Returns the cfg with real periodicity + columnDefs filled in (after
+  // a forced warmup if needed). Used right before download so the template
+  // reflects the real schema, never the placeholder.
+  onPrepareConfig?: (cfg: EntryConfig) => Promise<EntryConfig>;
 }) {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [query, setQuery] = React.useState("");
@@ -107,17 +112,65 @@ export function UnifiedUploadModal({
     window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 2800);
   }, []);
 
-  const handleDownloadOne = (cfg: EntryConfig) => {
-    // Single-sheet workbook so even one-config downloads are styled (blue
-    // headers, two-line target labels, gridlines) — matches the production format.
-    downloadWorkbook([cfg], from, to);
-    showToast(`Template for "${cfg.name}" downloaded`);
+  const prepare = React.useCallback(
+    async (cfg: EntryConfig): Promise<EntryConfig> => {
+      if (!onPrepareConfig) return cfg;
+      try {
+        return await onPrepareConfig(cfg);
+      } catch (e) {
+        console.warn("[modal] prepareConfig failed, downloading with placeholders", e);
+        return cfg;
+      }
+    },
+    [onPrepareConfig],
+  );
+
+  // Tracks which download is in flight so re-clicks don't trigger duplicate
+  // downloads while the async prepare() is still resolving. The first click
+  // can take longer (cold warmup) than the second (cache hit), so without a
+  // guard both eventually call downloadWorkbook and the browser saves two
+  // copies. `downloadInFlight` is a ref (not state) so the guard sees the
+  // latest value within the same synchronous handler call — state updates
+  // wouldn't be committed in time.
+  const downloadInFlightRef = React.useRef<Set<string>>(new Set());
+  const [downloadingKey, setDownloadingKey] = React.useState<string | null>(null);
+
+  const beginDownload = (key: string): boolean => {
+    if (downloadInFlightRef.current.has(key)) return false;
+    downloadInFlightRef.current.add(key);
+    setDownloadingKey(key);
+    return true;
+  };
+  const endDownload = (key: string) => {
+    downloadInFlightRef.current.delete(key);
+    setDownloadingKey((cur) => (cur === key ? null : cur));
   };
 
-  const handleDownloadAll = () => {
-    showToast(`Building workbook with ${selected.size} sheet${selected.size > 1 ? "s" : ""}…`);
-    downloadWorkbook(selectedConfigs, from, to);
-    showToast(`Workbook with ${selected.size} sheet${selected.size > 1 ? "s" : ""} downloaded`);
+  const handleDownloadOne = async (cfg: EntryConfig) => {
+    const key = `one:${cfg.id}`;
+    if (!beginDownload(key)) return;
+    try {
+      showToast(`Preparing template for "${cfg.name}"…`);
+      const ready = await prepare(cfg);
+      downloadWorkbook([ready], from, to);
+      showToast(`Template for "${cfg.name}" downloaded`);
+    } finally {
+      endDownload(key);
+    }
+  };
+
+  const handleDownloadAll = async () => {
+    const key = "all";
+    if (!beginDownload(key)) return;
+    try {
+      const count = selected.size;
+      showToast(`Preparing workbook with ${count} sheet${count > 1 ? "s" : ""}…`);
+      const ready = await Promise.all(selectedConfigs.map(prepare));
+      downloadWorkbook(ready, from, to);
+      showToast(`Workbook with ${count} sheet${count > 1 ? "s" : ""} downloaded`);
+    } finally {
+      endDownload(key);
+    }
   };
 
   const selectedConfigs = React.useMemo(
@@ -402,36 +455,41 @@ export function UnifiedUploadModal({
                     >
                       <Checkbox checked={checked} onChange={() => toggle(c.id)} />
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-slate-800 truncate flex items-center gap-1.5">
-                          <span className="truncate">{c.name}</span>
-                          {c.version === "v1" && (
-                            <span
-                              title="Legacy v1 sheet — fixed columns, can't be customized. Otherwise behaves the same."
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-300 font-semibold tracking-wide shrink-0"
-                            >
-                              LEGACY
-                            </span>
-                          )}
+                        <div className="text-sm font-medium text-slate-800 truncate">
+                          {c.name}
                         </div>
                         <div className="text-[11px] text-slate-500 mt-0.5">
                           {c.plant} · {c.periodicity} · {c.columns} columns
                           {c.subSections > 0 && ` · ${c.subSections} sub-section${c.subSections > 1 ? "s" : ""}`}
-                          {c.version === "v1" && " · fixed structure"}
                         </div>
                       </div>
-                      {checked && validRange && (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleDownloadOne(c);
-                          }}
-                          title={`Download single-sheet CSV template for ${c.name}`}
-                          className="w-7 h-7 rounded-md text-slate-500 hover:bg-emerald-100 hover:text-emerald-700 flex items-center justify-center"
-                        >
-                          <IconDownload size={14} />
-                        </button>
-                      )}
+                      {checked && validRange && (() => {
+                        const oneKey = `one:${c.id}`;
+                        const busy = downloadingKey === oneKey;
+                        return (
+                          <button
+                            disabled={busy}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (busy) return;
+                              handleDownloadOne(c);
+                            }}
+                            title={busy ? "Preparing…" : `Download template for ${c.name}`}
+                            className={`w-7 h-7 rounded-md flex items-center justify-center transition-colors ${
+                              busy
+                                ? "text-slate-300 cursor-wait"
+                                : "text-slate-500 hover:bg-emerald-100 hover:text-emerald-700"
+                            }`}
+                          >
+                            {busy ? (
+                              <div className="w-3 h-3 rounded-full border-2 border-slate-300 border-t-emerald-500 animate-spin" />
+                            ) : (
+                              <IconDownload size={14} />
+                            )}
+                          </button>
+                        );
+                      })()}
                       <span className="text-[10px] font-mono text-slate-400">{c.id}</span>
                     </label>
                   );
@@ -495,20 +553,40 @@ export function UnifiedUploadModal({
                   ))}
                 </div>
 
-                <button
-                  disabled={selected.size === 0 || !validRange}
-                  onClick={handleDownloadAll}
-                  className={`mt-4 w-full h-10 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-colors ${
-                    selected.size > 0 && validRange
-                      ? "bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-                      : "bg-slate-100 border border-slate-200 text-slate-400 cursor-not-allowed"
-                  }`}
-                >
-                  <IconDownload size={15} />
-                  {selected.size === 0
-                    ? "Select configs to download workbook"
-                    : `Download workbook (.xlsx · ${selected.size} sheet${selected.size > 1 ? "s" : ""})`}
-                </button>
+                {(() => {
+                  const allBusy = downloadingKey === "all";
+                  const disabled = selected.size === 0 || !validRange || allBusy;
+                  return (
+                    <button
+                      disabled={disabled}
+                      onClick={() => {
+                        if (disabled) return;
+                        handleDownloadAll();
+                      }}
+                      className={`mt-4 w-full h-10 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-colors ${
+                        allBusy
+                          ? "bg-emerald-50 border border-emerald-200 text-emerald-700 cursor-wait"
+                          : selected.size > 0 && validRange
+                          ? "bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                          : "bg-slate-100 border border-slate-200 text-slate-400 cursor-not-allowed"
+                      }`}
+                    >
+                      {allBusy ? (
+                        <>
+                          <div className="w-4 h-4 rounded-full border-2 border-emerald-200 border-t-emerald-600 animate-spin" />
+                          Preparing workbook…
+                        </>
+                      ) : (
+                        <>
+                          <IconDownload size={15} />
+                          {selected.size === 0
+                            ? "Select configs to download workbook"
+                            : `Download workbook (.xlsx · ${selected.size} sheet${selected.size > 1 ? "s" : ""})`}
+                        </>
+                      )}
+                    </button>
+                  );
+                })()}
 
                 {selected.size > 0 && validRange && (
                   <div className="mt-2 text-[11px] text-slate-500 leading-relaxed">
@@ -620,23 +698,6 @@ export function UnifiedUploadModal({
                       {files.length}
                     </span>
                   </div>
-                  {(() => {
-                    const legacy = selectedConfigs.filter((c) => c.version === "v1").length;
-                    if (legacy === 0) return null;
-                    return (
-                      <div className="flex items-center justify-between text-sm mt-1 pt-1 border-t border-slate-200">
-                        <span className="text-slate-600 flex items-center gap-1.5">
-                          <span className="text-[9px] px-1 py-0.5 rounded bg-slate-200 text-slate-700 border border-slate-300 font-semibold tracking-wide">
-                            LEGACY
-                          </span>
-                          v1 sheets
-                        </span>
-                        <span className="font-semibold text-slate-700">
-                          {legacy} of {selected.size}
-                        </span>
-                      </div>
-                    );
-                  })()}
                 </div>
 
                 <div className="mt-5 text-[11px] text-slate-500 leading-relaxed bg-sky-50/60 border border-sky-100 rounded-lg p-3">

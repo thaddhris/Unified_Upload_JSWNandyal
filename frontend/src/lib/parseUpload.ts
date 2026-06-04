@@ -1,5 +1,7 @@
 import * as XLSX from "xlsx";
 
+export type ParsedRowValues = Record<string /* columnHeader */, string /* cellValue */>;
+
 export type ParsedSheet = {
   fileName: string;
   sheetName?: string;
@@ -11,6 +13,11 @@ export type ParsedSheet = {
   // ISO strings for every row that had at least one filled value. Used by the
   // adapter's checkConflicts() to split new vs overwrites in the preview.
   filledTimestamps: string[];
+  // Per-row cell values keyed by the column-header string. Parallel to
+  // filledTimestamps — entry N corresponds to timestamp N. Cells that were
+  // empty in the file are omitted from each row's record so saveRows skips
+  // them naturally.
+  filledRows_data: Array<{ timestamp: string; values: ParsedRowValues }>;
 };
 
 const RESERVED = new Set(["Date", "Time", "Shift", "Operator", "Remarks"]);
@@ -65,12 +72,30 @@ function analyzeRows(
   let configName = configNameHint;
   let headerIdx = -1;
 
+  // Patterns for both ID generations:
+  //   v1 mock:   cfg-001
+  //   v2 IOsense: mde:<24-hex Mongo ObjectId>
+  const ID_PATTERNS = [
+    /\((mde:[0-9a-f]{24})\)/i,
+    /(mde:[0-9a-f]{24})/i,
+    /\((cfg-\d+)\)/i,
+    /(cfg-\d+)/i,
+  ];
+
+  const tryExtractId = (haystack: string): string | null => {
+    for (const re of ID_PATTERNS) {
+      const m = haystack.match(re);
+      if (m) return m[1].toLowerCase();
+    }
+    return null;
+  };
+
   for (let i = 0; i < rows.length; i++) {
     const cells = rows[i] ?? [];
     const joined = cells.join(" ");
     if (!configId) {
-      const m = joined.match(/\((cfg-\d+)\)/i) || joined.match(/(cfg-\d+)/i);
-      if (m) configId = m[1].toLowerCase();
+      const found = tryExtractId(joined);
+      if (found) configId = found;
     }
     if (!configName) {
       const m = joined.match(/Configuration:\s*(.+?)\s*\(/i);
@@ -84,8 +109,8 @@ function analyzeRows(
 
   if (!configId) {
     const src = sheetName ?? fileName;
-    const m = src.match(/(cfg-\d+)/i);
-    if (m) configId = m[1].toLowerCase();
+    const found = tryExtractId(src);
+    if (found) configId = found;
   }
 
   if (headerIdx === -1) {
@@ -98,12 +123,52 @@ function analyzeRows(
       filledRows: 0,
       headers: [],
       filledTimestamps: [],
+      filledRows_data: [],
     };
   }
 
-  const headers = (rows[headerIdx] ?? []).map((h) =>
-    (h ?? "").toString().replace(/^﻿/, "").replace(/^"+|"+$/g, "").trim(),
-  );
+  const cleanCell = (raw: unknown): string =>
+    (raw ?? "").toString().replace(/^﻿/, "").replace(/^"+|"+$/g, "").trim();
+
+  const topRow = (rows[headerIdx] ?? []).map(cleanCell);
+
+  // Detect a two-row grouped header: the row immediately AFTER `topRow` looks
+  // like a continuation header when (a) its first cell is empty (DATE was
+  // vertically merged across the two rows) AND (b) at least one of its other
+  // cells has text. Templates with no subsections have a single header row.
+  const nextRow = (rows[headerIdx + 1] ?? []).map(cleanCell);
+  const isGroupedHeader =
+    nextRow.length > 0 &&
+    nextRow[0] === "" &&
+    nextRow.slice(1).some((c) => c !== "");
+
+  let headers: string[];
+  let dataStartIdx: number;
+
+  if (isGroupedHeader) {
+    // Combine top (group name) + bottom (leaf label) into the unique key.
+    // Top-row merges leave empty cells to the right of the group name, so we
+    // carry the most recent non-empty group label forward.
+    headers = topRow.map((top, i) => {
+      const bot = nextRow[i] ?? "";
+      if (i === 0) return top; // DATE
+      if (top && bot) return `${top} · ${bot}`;
+      if (top && !bot) return top; // ungrouped column, vertical merge (only top is set)
+      if (!top && bot) {
+        // empty top = part of a left-spanning merge; carry the group name forward
+        let j = i - 1;
+        while (j > 0 && topRow[j] === "") j--;
+        const group = topRow[j] ?? "";
+        return group ? `${group} · ${bot}` : bot;
+      }
+      return "";
+    });
+    dataStartIdx = headerIdx + 2;
+  } else {
+    headers = topRow;
+    dataStartIdx = headerIdx + 1;
+  }
+
   const dateColIdx = headers.findIndex((h) => h.toLowerCase().startsWith("date"));
   const dataColIdxs = headers
     .map((h, i) => ({ h, i }))
@@ -113,18 +178,33 @@ function analyzeRows(
   let totalRows = 0;
   let filledRows = 0;
   const filledTimestamps: string[] = [];
+  const filledRows_data: Array<{ timestamp: string; values: ParsedRowValues }> = [];
 
-  for (let i = headerIdx + 1; i < rows.length; i++) {
+  for (let i = dataStartIdx; i < rows.length; i++) {
     const cells = rows[i] ?? [];
     if (cells.every((c) => (c ?? "").toString().trim() === "")) continue;
     totalRows++;
     const hasData = dataColIdxs.some((idx) => ((cells[idx] ?? "") as string).toString().trim() !== "");
     if (hasData) {
       filledRows++;
+      let iso: string | null = null;
       if (dateColIdx >= 0) {
         const raw = ((cells[dateColIdx] ?? "") as string).toString().trim();
-        const iso = normalizeTimestamp(raw);
+        iso = normalizeTimestamp(raw);
         if (iso) filledTimestamps.push(iso);
+      }
+      if (iso) {
+        // Capture every filled cell's value keyed by its column header so
+        // saveRows can map it back to the right (devID, sensor) pair.
+        const values: ParsedRowValues = {};
+        for (const idx of dataColIdxs) {
+          const raw = (cells[idx] ?? "").toString().trim();
+          if (raw === "") continue;
+          const header = headers[idx];
+          if (!header) continue;
+          values[header] = raw;
+        }
+        filledRows_data.push({ timestamp: iso, values });
       }
     }
   }
@@ -138,6 +218,7 @@ function analyzeRows(
     filledRows,
     headers,
     filledTimestamps,
+    filledRows_data,
   };
 }
 

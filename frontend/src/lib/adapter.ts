@@ -39,7 +39,41 @@ export interface UnifiedUploadAdapter {
    * unavailable — the UI handles it.
    */
   checkConflicts?(cfg: EntryConfig, timestamps: Date[]): Promise<Set<string>>;
+
+  /**
+   * Optional: background-prefetch detailed schema/periodicity for the given
+   * configs and fire `onProgress` as each one lands. The UI uses this to
+   * progressively replace placeholder periodicity/column counts in the list
+   * without blocking first paint.
+   *
+   * Implementations should rate-limit themselves (~6 concurrent) so we don't
+   * burst the backend with 100+ parallel requests.
+   */
+  warmupConfigs?(
+    configIds: string[],
+    onProgress: (configId: string, patch: ConfigWarmupPatch) => void,
+  ): Promise<void>;
 }
+
+/**
+ * Per-config patch fired by warmupConfigs as detail lands. Only the fields we
+ * can actually derive from the schema fetch — the rest of EntryConfig stays
+ * whatever listConfigs returned.
+ */
+export type ConfigWarmupPatch = {
+  periodicity?: EntryConfig["periodicity"];
+  columns?: number;
+  columnDefs?: ColumnDef[];
+  // Per-section time anchoring (from `section.config.time` when present).
+  // cycleTimeHr/Min is the time-of-day in the section's timezone.
+  cycleTimeHr?: number;
+  cycleTimeMin?: number;
+  // The section's daily anchor expressed as ms-into-the-UTC-day, derived
+  // from existing data points. Preferred over cycleTimeHr/Min because it
+  // works even when section config isn't returned, and matches what the
+  // backend actually keys entries on (timezone-independent).
+  anchorOffsetMs?: number;
+};
 
 export type SavePayloadRow = {
   timestamp: Date;
