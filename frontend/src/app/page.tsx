@@ -13,7 +13,7 @@ import {
 } from "../lib/mockData";
 import { type ParsedSheet } from "../lib/parseUpload";
 import { detectAdapterMode, getAdapter, type AdapterMode } from "../lib/getAdapter";
-import { bootstrapAuth, hasAuth } from "../lib/iosenseClient";
+import { bootstrapAuth, hasAuth, loginWithCredentials } from "../lib/iosenseClient";
 import { getLastDiscoveryStats, type AdapterDiscoveryStats } from "../lib/iosenseAdapter";
 import { listGroups, type ConfigGroup } from "../lib/groups";
 import type { UnifiedUploadAdapter } from "../lib/adapter";
@@ -293,65 +293,120 @@ function BootSplash() {
 /* ─── Sign-in required (when no SSO token can be found) ─────────────────── */
 
 function SignInRequired() {
+  const [email, setEmail] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [showSso, setShowSso] = React.useState(false);
+
+  const onLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!email.trim() || !password) {
+      setError("Email and password are required.");
+      return;
+    }
+    setBusy(true);
+    const result = await loginWithCredentials(email.trim(), password);
+    if (!result.ok) {
+      setError(result.message);
+      setBusy(false);
+      return;
+    }
+    window.location.reload();
+  };
+
   return (
     <div className="px-6 py-14 max-w-xl mx-auto">
-      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8 text-center">
-        <div className="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center mb-4">
-          <IconUpload size={22} />
-        </div>
-        <h1 className="text-xl font-semibold text-slate-900 tracking-tight">
-          Sign in to continue
-        </h1>
-        <p className="text-sm text-slate-500 mt-2 max-w-sm mx-auto">
-          Unified Upload is part of the IOsense platform. Open it from your
-          IOsense dashboard so a session can be exchanged, or paste an SSO token
-          below.
-        </p>
-
-        <a
-          href="https://iosense.io/profile"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-6 inline-flex items-center justify-center w-full h-12 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white text-sm font-semibold shadow-md shadow-emerald-500/20 hover:from-emerald-600 hover:to-teal-700 transition-all"
-        >
-          Open IOsense portal
-        </a>
-
-        <div className="flex items-center gap-3 my-5 text-[11px] uppercase tracking-wider text-slate-400">
-          <div className="flex-1 h-px bg-slate-200" />
-          <span>or paste an SSO token</span>
-          <div className="flex-1 h-px bg-slate-200" />
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8">
+        <div className="text-center">
+          <div className="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center mb-4">
+            <IconUpload size={22} />
+          </div>
+          <h1 className="text-xl font-semibold text-slate-900 tracking-tight">
+            Sign in to continue
+          </h1>
+          <p className="text-sm text-slate-500 mt-2 max-w-sm mx-auto">
+            Sign in with your IOsense credentials to access Unified Upload.
+          </p>
         </div>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const f = new FormData(e.currentTarget);
-            const token = String(f.get("token") ?? "").trim();
-            if (!token) return;
-            const url = new URL(window.location.href);
-            url.searchParams.set("token", token);
-            window.location.replace(url.toString());
-          }}
-          className="flex gap-2"
-        >
+        <form onSubmit={onLogin} className="mt-6 space-y-3">
           <input
-            name="token"
-            placeholder="Paste SSO token from IOsense → Profile"
-            className="flex-1 h-10 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+            type="email"
+            autoComplete="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            disabled={busy}
+            className="w-full h-11 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 disabled:bg-slate-50"
           />
+          <input
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            disabled={busy}
+            className="w-full h-11 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 disabled:bg-slate-50"
+          />
+          {error && (
+            <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
+              {error}
+            </div>
+          )}
           <button
             type="submit"
-            className="h-10 px-4 rounded-lg bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800"
+            disabled={busy}
+            className="w-full h-12 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white text-sm font-semibold shadow-md shadow-emerald-500/20 hover:from-emerald-600 hover:to-teal-700 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Continue
+            {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
 
-        <p className="text-[11px] text-slate-400 mt-5">
-          In IOsense, go to <span className="font-medium text-slate-600">Profile → Generate SSO token</span>.
-          Tokens are one-time use and expire after 60 seconds.
-        </p>
+        <div className="mt-5 text-center">
+          <button
+            onClick={() => setShowSso((v) => !v)}
+            className="text-xs text-slate-500 hover:text-slate-700"
+          >
+            {showSso ? "Hide SSO token option" : "Use an SSO token instead"}
+          </button>
+        </div>
+
+        {showSso && (
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const f = new FormData(e.currentTarget);
+                const token = String(f.get("token") ?? "").trim();
+                if (!token) return;
+                const url = new URL(window.location.href);
+                url.searchParams.set("token", token);
+                window.location.replace(url.toString());
+              }}
+              className="flex gap-2"
+            >
+              <input
+                name="token"
+                placeholder="Paste SSO token from IOsense → Profile"
+                className="flex-1 h-10 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+              />
+              <button
+                type="submit"
+                className="h-10 px-4 rounded-lg bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800"
+              >
+                Continue
+              </button>
+            </form>
+            <p className="text-[11px] text-slate-400 mt-2 text-center">
+              In IOsense, go to <span className="font-medium text-slate-600">Profile → Generate SSO token</span>.
+              Tokens are one-time use and expire after 60 seconds.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

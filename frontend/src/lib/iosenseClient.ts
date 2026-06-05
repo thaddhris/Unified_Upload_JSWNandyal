@@ -94,6 +94,57 @@ export async function bootstrapAuth(): Promise<boolean> {
   }
 }
 
+/**
+ * Direct email + password login (legacy `userLogin`). Bypasses the SSO portal
+ * detour for users who'd rather sign in inline. On success, stores the
+ * Bearer JWT exactly like `bootstrapAuth` does.
+ *
+ * NOTE: We deliberately do NOT call setOrg() here. The login endpoint requires
+ * `organisation: https://iosense.io` on its own request, but stuffing that
+ * value into every subsequent appserver call confuses appserver and yields
+ * wrong-org responses (same comment as in buildHeaders below).
+ */
+export async function loginWithCredentials(
+  username: string,
+  password: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (typeof window === "undefined") return { ok: false, message: "no-browser" };
+
+  let resp: Response;
+  try {
+    resp = await fetch(`${BASE_URL}/api/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        organisation: "https://iosense.io",
+        "ngsw-bypass": "true",
+      },
+      body: JSON.stringify({ username, password }),
+      cache: "no-store",
+    });
+  } catch (e) {
+    return { ok: false, message: (e as Error).message || "Network error" };
+  }
+
+  let body: { authorization?: string; success?: boolean; message?: string; errors?: string[] } = {};
+  try {
+    body = await resp.json();
+  } catch {
+    /* non-JSON */
+  }
+
+  if (!resp.ok || !body?.authorization) {
+    const msg =
+      body?.message ??
+      (Array.isArray(body?.errors) ? body.errors.join("; ") : null) ??
+      (resp.status === 401 ? "Invalid email or password" : `${resp.status} ${resp.statusText}`);
+    return { ok: false, message: msg };
+  }
+
+  setStoredToken(body.authorization);
+  return { ok: true };
+}
+
 type RequestOptions = {
   method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
   body?: unknown;

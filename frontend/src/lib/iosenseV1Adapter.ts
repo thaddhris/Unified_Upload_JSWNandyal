@@ -135,6 +135,30 @@ type V1SheetMeta = {
 
 const v1MetaCache = new Map<string, V1SheetMeta>();
 
+// Probe cache: which V1 devIDs the *current* account actually owns. Without
+// this, every account would see all 9 hardcoded JSW sheets even though the
+// underlying device only exists on JSW Nandyal / JSW Cement.
+// Cleared in listConfigs (rebuilt on every session/refresh).
+let ownedDevIdsCache: Set<string> | null = null;
+
+async function probeDeviceOwnership(devIDs: string[]): Promise<Set<string>> {
+  const owned = new Set<string>();
+  await Promise.all(
+    devIDs.map(async (id) => {
+      try {
+        const resp = await ioFetch<DeviceMetaResponse>(
+          `/api/account/ai-sdk/metaData/device/${encodeURIComponent(id)}`,
+          { method: "GET" },
+        );
+        if (resp?.success && resp.data?.devID === id) owned.add(id);
+      } catch {
+        // 401/403/404 → not on this account; silently exclude.
+      }
+    }),
+  );
+  return owned;
+}
+
 /* ─── Config id encoding (jsw:<devID>:<entity>) ──────────────────────────── */
 
 function encodeV1Id(devID: string, entity: string): string {
@@ -286,20 +310,30 @@ async function buildSheetMeta(def: V1SheetDef): Promise<V1SheetMeta | null> {
 export const iosenseV1Adapter: UnifiedUploadAdapter = {
   async listConfigs(): Promise<EntryConfig[]> {
     v1MetaCache.clear();
+
+    // Only show V1 sheets whose underlying device the logged-in account
+    // actually owns. JSW dashboards are account-specific; other tenants
+    // shouldn't see them at all.
+    const uniqueDevIds = Array.from(new Set(V1_SHEETS.map((s) => s.devID)));
+    ownedDevIdsCache = await probeDeviceOwnership(uniqueDevIds);
+    if (ownedDevIdsCache.size === 0) return [];
+
     const now = new Date().toISOString().slice(0, 16).replace("T", " ");
-    return V1_SHEETS.map((def) => ({
-      id: encodeV1Id(def.devID, def.entity),
-      name: def.name,
-      plant: "V1 Sheet",
-      subSections: 0,
-      periodicity: "Daily",
-      // Placeholder column count until warmup populates the real one.
-      columns: 1,
-      lastUpdated: now,
-      owner: "IOsense",
-      status: "Active",
-      version: "v1",
-    }));
+    return V1_SHEETS.filter((def) => ownedDevIdsCache!.has(def.devID)).map(
+      (def) => ({
+        id: encodeV1Id(def.devID, def.entity),
+        name: def.name,
+        plant: "V1 Sheet",
+        subSections: 0,
+        periodicity: "Daily",
+        // Placeholder column count until warmup populates the real one.
+        columns: 1,
+        lastUpdated: now,
+        owner: "IOsense",
+        status: "Active",
+        version: "v1",
+      }),
+    );
   },
 
   async getSchema(cfg: EntryConfig): Promise<ColumnDef[]> {
@@ -411,7 +445,10 @@ export const iosenseV1Adapter: UnifiedUploadAdapter = {
       }
 
       cells.time = row.timestamp.toISOString();
-      cells.entity = def.entity;
+      // NOTE: production `createBulk` cURL has `entity` only at the top level
+      // of the body, not inside each row's data dict. Existing rows fetched
+      // via getTableRowJSW do carry `data.entity`, and we let that survive
+      // the spread — but we don't add it when starting from a blank row.
       return { devID: def.devID, data: cells };
     });
 
