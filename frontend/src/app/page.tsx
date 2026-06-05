@@ -13,7 +13,7 @@ import {
 } from "../lib/mockData";
 import { type ParsedSheet } from "../lib/parseUpload";
 import { detectAdapterMode, getAdapter, type AdapterMode } from "../lib/getAdapter";
-import { bootstrapAuth, hasAuth } from "../lib/iosenseClient";
+import { bootstrapAuth } from "../lib/iosenseClient";
 import { getLastDiscoveryStats, type AdapterDiscoveryStats } from "../lib/iosenseAdapter";
 import { listGroups, type ConfigGroup } from "../lib/groups";
 import type { UnifiedUploadAdapter } from "../lib/adapter";
@@ -29,7 +29,6 @@ export default function Page() {
   const [preselected, setPreselected] = React.useState<string[] | undefined>();
   const [adapterMode, setAdapterMode] = React.useState<AdapterMode>("iosense");
   const [authReady, setAuthReady] = React.useState(false);
-  const [needsSignIn, setNeedsSignIn] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [discovery, setDiscovery] = React.useState<AdapterDiscoveryStats | null>(null);
 
@@ -46,14 +45,13 @@ export default function Page() {
       setAdapterMode(mode);
 
       if (mode === "iosense") {
-        const ok = await bootstrapAuth();
+        // Per the IOsense SDK pattern, the app is opened with an SSO token
+        // appended as `?token=<sso>` in the URL; bootstrapAuth exchanges it
+        // for a Bearer JWT and stores it. We do NOT gate on the result —
+        // there's no in-app sign-in UI. If the token's missing or expired,
+        // upstream calls will 401 and the load-error banner surfaces.
+        await bootstrapAuth();
         if (!alive) return;
-        if (!ok && !hasAuth()) {
-          setNeedsSignIn(true);
-          setAuthReady(true);
-          setLoading(false);
-          return;
-        }
       }
       adapterRef.current = getAdapter(mode);
       setAuthReady(true);
@@ -98,12 +96,11 @@ export default function Page() {
       } catch (e) {
         if (!alive) return;
         const err = e as { status?: number; message?: string };
-        // 401 → stale token, fall back to sign-in screen instead of a banner
-        if (err.status === 401) {
-          setNeedsSignIn(true);
-        } else {
-          setLoadError(err.message ?? "Failed to load configurations.");
-        }
+        setLoadError(
+          err.status === 401
+            ? "Session expired or missing — re-open this app from IOsense with a fresh SSO token (?token=...)."
+            : err.message ?? "Failed to load configurations.",
+        );
         setLoading(false);
       }
     })();
@@ -219,9 +216,7 @@ export default function Page() {
     <Shell>
       {!authReady && <BootSplash />}
 
-      {authReady && needsSignIn && stage === "landing" && <SignInRequired />}
-
-      {authReady && !needsSignIn && (stage === "landing" || stage === "uploadModal") && (
+      {authReady && (stage === "landing" || stage === "uploadModal") && (
         <Landing
           loading={loading}
           configs={configs}
@@ -235,7 +230,7 @@ export default function Page() {
         />
       )}
 
-      {authReady && !needsSignIn && stage === "uploadModal" && !loading && (
+      {authReady && stage === "uploadModal" && !loading && (
         <UnifiedUploadModal
           configs={configs}
           preselectedIds={preselected}
@@ -290,72 +285,6 @@ function BootSplash() {
   );
 }
 
-/* ─── Sign-in required (when no SSO token can be found) ─────────────────── */
-
-function SignInRequired() {
-  return (
-    <div className="px-6 py-14 max-w-xl mx-auto">
-      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8 text-center">
-        <div className="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center mb-4">
-          <IconUpload size={22} />
-        </div>
-        <h1 className="text-xl font-semibold text-slate-900 tracking-tight">
-          Sign in to continue
-        </h1>
-        <p className="text-sm text-slate-500 mt-2 max-w-sm mx-auto">
-          Unified Upload is part of the IOsense platform. Open it from your
-          IOsense dashboard so a session can be exchanged, or paste an SSO token
-          below.
-        </p>
-
-        <a
-          href="https://iosense.io/profile"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-6 inline-flex items-center justify-center w-full h-12 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white text-sm font-semibold shadow-md shadow-emerald-500/20 hover:from-emerald-600 hover:to-teal-700 transition-all"
-        >
-          Open IOsense portal
-        </a>
-
-        <div className="flex items-center gap-3 my-5 text-[11px] uppercase tracking-wider text-slate-400">
-          <div className="flex-1 h-px bg-slate-200" />
-          <span>or paste an SSO token</span>
-          <div className="flex-1 h-px bg-slate-200" />
-        </div>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const f = new FormData(e.currentTarget);
-            const token = String(f.get("token") ?? "").trim();
-            if (!token) return;
-            const url = new URL(window.location.href);
-            url.searchParams.set("token", token);
-            window.location.replace(url.toString());
-          }}
-          className="flex gap-2"
-        >
-          <input
-            name="token"
-            placeholder="Paste SSO token from IOsense → Profile"
-            className="flex-1 h-10 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
-          />
-          <button
-            type="submit"
-            className="h-10 px-4 rounded-lg bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800"
-          >
-            Continue
-          </button>
-        </form>
-
-        <p className="text-[11px] text-slate-400 mt-5">
-          In IOsense, go to <span className="font-medium text-slate-600">Profile → Generate SSO token</span>.
-          Tokens are one-time use and expire after 60 seconds.
-        </p>
-      </div>
-    </div>
-  );
-}
 
 /* ─── Landing page (minimal, upload-focused) ─────────────────────────────── */
 
