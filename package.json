@@ -1,0 +1,11 @@
+{
+  "name": "unified-upload-deploy-shim",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Root shim so the iocompute deploy pipeline (which runs `npm install` + `npm run build` at the repo root) successfully builds the Next.js app that lives in ./frontend and exposes its static export as ./out.",
+  "scripts": {
+    "install-frontend": "cd frontend && npm install --force",
+    "build": "npm run install-frontend && cd frontend && npm run build && cd .. && rm -rf out && cp -r frontend/out out",
+    "export": "npm run build"
+  }
+}
