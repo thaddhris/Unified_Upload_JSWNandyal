@@ -1,13 +1,14 @@
 // Thin HTTP client for IOsense.
 //
-// Calls go through one of two same-origin proxies (CORS-bypass):
-//   /api/iosense/...      → connector.iosense.io  (auth/SSO + legacy routes)
-//   /api/iosense-app/...  → appserver.iosense.io  (MDE V2 routes)
-//
-// `ioFetch` targets connector; `ioFetchApp` targets appserver.
+// Build target: static export (no Node runtime / no proxy routes available).
+// `ioFetch` targets connector.iosense.io; `ioFetchApp` targets appserver.
+// CORS: IOsense must allow the deployed origin (currently *.iocompute.ai).
+// If CORS blocks, every call from the deployed build fails before it leaves
+// the browser — fix is upstream (allow-list our origin) or switch the
+// platform back to SSR mode and restore the proxy routes.
 
-const BASE_URL = "/api/iosense";
-const BASE_URL_APP = "/api/iosense-app";
+const BASE_URL = "https://connector.iosense.io";
+const BASE_URL_APP = "https://appserver.iosense.io";
 const TOKEN_KEY = "authorization";
 const ORG_KEY = "iosense.organisation";
 
